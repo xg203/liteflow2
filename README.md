@@ -1,4 +1,4 @@
-# PyFlow Prototype (LiteFlow)
+# LiteFlow
 
 ## Overview
 
