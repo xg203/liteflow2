@@ -72,6 +72,7 @@ python my_pipeline.py --fail-b
 
 # Clean up the working directory before running
 python my_pipeline.py --cleanup --config config.json
+```
 
 ## Current Limitations:
 * No Caching: Tasks are re-executed every time the workflow runs, even if inputs haven't changed. There is no persistent caching between runs.
