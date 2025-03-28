@@ -73,35 +73,21 @@ python my_pipeline.py --fail-b
 # Clean up the working directory before running
 python my_pipeline.py --cleanup --config config.json
 
-** Current Limitations:**
-No Caching: Tasks are re-executed every time the workflow runs, even if inputs haven't changed. There is no persistent caching between runs.
+## Current Limitations:
+* No Caching: Tasks are re-executed every time the workflow runs, even if inputs haven't changed. There is no persistent caching between runs.
+* No Container Support: Tasks execute directly on the host system. Integration with Docker or Singularity is not yet implemented.
+* Basic Input/Output Handling: Primarily focused on passing file paths (as strings). No explicit system for handling directories robustly or passing complex Python objects between processes reliably.
+* Basic Scheduling: Dependency-driven execution only. No support for task retries, time limits, conditional execution based on output content, etc.
+* Local Execution Only: Designed to run on a single machine using multiple processes. No support for submitting jobs to HPC schedulers (SLURM, SGE, LSF, etc.) or cloud batch systems (AWS Batch, Google Cloud Batch).
+* Rudimentary DAG: The dependency graph is built implicitly and used for execution, but there's no upfront DAG analysis, cycle detection, or visualization capability.
+* Error Propagation: Basic cancellation of downstream tasks on failure. More sophisticated strategies are not implemented.
 
-No Container Support: Tasks execute directly on the host system. Integration with Docker or Singularity is not yet implemented.
-
-Basic Input/Output Handling: Primarily focused on passing file paths (as strings). No explicit system for handling directories robustly or passing complex Python objects between processes reliably.
-
-Basic Scheduling: Dependency-driven execution only. No support for task retries, time limits, conditional execution based on output content, etc.
-
-Local Execution Only: Designed to run on a single machine using multiple processes. No support for submitting jobs to HPC schedulers (SLURM, SGE, LSF, etc.) or cloud batch systems (AWS Batch, Google Cloud Batch).
-
-Rudimentary DAG: The dependency graph is built implicitly and used for execution, but there's no upfront DAG analysis, cycle detection, or visualization capability.
-
-Error Propagation: Basic cancellation of downstream tasks on failure. More sophisticated strategies are not implemented.
-
-Next Steps / Roadmap
-This prototype lays the groundwork. Future development could focus on:
-
-Robust Caching: Implement persistent caching based on hashing inputs (arguments, config, input file content/timestamps) and checking output existence/integrity. This is crucial for efficient re-runs.
-
-Container Integration: Allow tasks to specify a Docker (or Singularity) image (@task(image="...")) and execute the task command within that container, managing volume mounts automatically.
-
-Input/Output Type System: Introduce explicit types (e.g., File, Directory, Str, Int) for task inputs/outputs to enable better validation, handling (e.g., ensuring directories exist), and potentially more robust serialization.
-
-Enhanced Error Handling: Implement task retry mechanisms (e.g., @task(retries=3)).
-
-Explicit DAG Management: Build the Directed Acyclic Graph explicitly before execution, allowing for cycle detection and potentially visualization (e.g., using Graphviz).
-
-Resource Specification: Allow tasks to declare resource needs (e.g., @task(cpus=4, memory="8G")) – primarily useful for future scheduler integration.
-
-(Ambitious) Basic Executor Plugins: Develop support for different execution environments, starting potentially with a simple SLURM backend.
+## Next Steps / Roadmap
+* Robust Caching: Implement persistent caching based on hashing inputs (arguments, config, input file content/timestamps) and checking output existence/integrity. This is crucial for efficient re-runs.
+* Container Integration: Allow tasks to specify a Docker (or Singularity) image (@task(image="...")) and execute the task command within that container, managing volume mounts automatically.
+* Input/Output Type System: Introduce explicit types (e.g., File, Directory, Str, Int) for task inputs/outputs to enable better validation, handling (e.g., ensuring directories exist), and potentially more robust serialization.
+* Enhanced Error Handling: Implement task retry mechanisms (e.g., @task(retries=3)).
+* Explicit DAG Management: Build the Directed Acyclic Graph explicitly before execution, allowing for cycle detection and potentially visualization (e.g., using Graphviz).
+* Resource Specification: Allow tasks to declare resource needs (e.g., @task(cpus=4, memory="8G")) – primarily useful for future scheduler integration.
+* (Ambitious) Basic Executor Plugins: Develop support for different execution environments, starting potentially with a simple SLURM backend.
 
