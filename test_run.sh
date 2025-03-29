@@ -2,7 +2,8 @@
 # Make sure word_counter.sh exists and is executable
 
 # Run using parameters from config.json
-python pipeline.py --config config.json
+python -m workflow.pipeline --config config/config.json
+
 
 # Run with cleanup
-# python pipeline.py --config config.json --cleanup
+# python -m workflow.pipeline --config config/config.json --cleanup

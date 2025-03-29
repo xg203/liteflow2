@@ -1,14 +1,12 @@
-# File: tasks.py
-
+# File: workflow/tasks.py
 import os
 import math
 import subprocess
 import hashlib
 import shlex # Ensure shlex is imported if used for quoting
 
-# Import helpers from pyflow_core
-# We need run_shell for executing commands and _create_input_symlink for managing links within tasks
-from pyflow_core import run_shell, _create_input_symlink
+# Updated relative import since tasks.py and pyflow_core.py are in the same dir
+from .pyflow_core import run_shell, _create_input_symlink
 
 # --- Task 1: Split File ---
 def split_file(input_path, num_splits, task_work_dir, config):
@@ -163,8 +161,9 @@ def run_word_count_on_list(split_files_list, task_work_dir, config):
             docker_run_command = " ".join(docker_cmd_parts)
             # Redirect Docker stdout on the HOST to the final count file
             command_to_run = f"{docker_run_command} > {shlex.quote(host_abs_count_output_file)}"
-            # Run the docker command from the main task work dir to simplify paths
-            run_cwd = task_work_dir
+            # Run the docker command from the main task work dir to simplify paths?
+            # Let's try running from the part_subdir_path to keep logic similar
+            run_cwd = part_subdir_path
 
         else: # Host execution
             # Command runs script directly, redirecting output to count file
@@ -184,7 +183,7 @@ def run_word_count_on_list(split_files_list, task_work_dir, config):
             # Execute the command (Docker or Host)
             run_shell(
                 command_to_run,
-                cwd=run_cwd,
+                cwd=run_cwd, # Use the determined CWD
                 command_log_file=command_log_file_path
             )
 
@@ -240,6 +239,7 @@ def sum_counts(counts_list, final_output_filename, task_work_dir, config):
         raise TypeError("Input to sum_counts must be a list.")
     # Ensure all items are numbers (or coerce if possible, safer to check)
     try:
+        # Convert possible string numbers from file reads etc.
         numeric_counts = [int(c) for c in counts_list]
     except (ValueError, TypeError) as e:
         print(f"  [Task Logic] sum_counts: ERROR - Input list contains non-numeric values: {counts_list} ({e})")
@@ -260,8 +260,10 @@ def sum_counts(counts_list, final_output_filename, task_work_dir, config):
         raise ValueError("final_output_filename parameter missing")
 
     # Construct absolute path for the final output file
+    # Assume output_dir_rel is relative to original CWD where pipeline was launched
     output_dir_abs = os.path.abspath(output_dir_rel)
-    final_output_path = os.path.join(output_dir_abs, final_output_filename) # Define before try block
+    # Define final_output_path BEFORE the try block
+    final_output_path = os.path.join(output_dir_abs, final_output_filename)
 
     try:
         # Ensure the final output directory exists

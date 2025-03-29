@@ -1,7 +1,7 @@
 {
   "global_params": {
-    "output_dir": "results_docker",
-    "work_dir": "_workflow_intermediate_docker",
+    "output_dir": "test/results_docker",
+    "work_dir": "test/_workflow_intermediate_docker",
     "pipeline_description": "Word count split-map-reduce example (with Docker)"
   },
   "tasks": {
