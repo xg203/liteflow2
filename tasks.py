@@ -2,12 +2,13 @@
 import os
 import math
 import subprocess
-import hashlib  # <-- Import hashlib
-from pyflow_core import run_shell
+import hashlib
+# Import the modified run_shell
+from pyflow_core import run_shell, _create_input_symlink # Also import the helper
 
 # --- split_file remains the same ---
 def split_file(input_path, num_splits, task_work_dir, config):
-    # ... (no changes here) ...
+    # ... (no changes) ...
     print(f"  [Task Logic] split_file: Splitting '{input_path}' into {num_splits} parts.")
     output_files = []
     try:
@@ -33,9 +34,12 @@ def split_file(input_path, num_splits, task_work_dir, config):
 # --- MODIFIED run_word_count_on_list ---
 def run_word_count_on_list(split_files_list, task_work_dir, config):
     """
-    Runs word count SCRIPT on each file in the list, placing each result
-    in a separate subdirectory named by a hash of the input file path,
-    and returns a list of counts.
+    Runs word count SCRIPT on each file in the list. For each part:
+    - Creates a subdirectory named by input hash.
+    - Creates symlink to the input split file inside the subdir.
+    - Saves the executed command to .command.sh inside the subdir.
+    - Places count result (e.g., count_01.txt) inside the subdir.
+    Returns a list of counts.
     """
     counts = []
     script_path = config.get("tasks", {}).get("word_counter", {}).get("params", {}).get("word_count_script_path")
@@ -45,20 +49,18 @@ def run_word_count_on_list(split_files_list, task_work_dir, config):
          raise FileNotFoundError(f"Word count script not found or configured: {script_path}")
 
     print(f"  [Task Logic] run_word_count_on_list: Processing {len(split_files_list)} files using script '{script_path}'.")
-    abs_task_work_dir = os.path.abspath(task_work_dir)
+    # task_work_dir is already absolute as passed by _run_task_in_process
 
     for i, file_path in enumerate(split_files_list):
-        # Generate a hash based on the absolute input file path for the subdirectory name
-        # Using absolute path ensures consistency even if relative paths were somehow passed
         abs_file_path = os.path.abspath(file_path)
-        input_hash = hashlib.md5(abs_file_path.encode('utf-8')).hexdigest()[:10] # 10-char MD5 hash
+        input_hash = hashlib.md5(abs_file_path.encode('utf-8')).hexdigest()[:10]
+        part_subdir_path = os.path.join(task_work_dir, input_hash) # Use task_work_dir directly
 
-        # Use the hash as the subdirectory name
-        part_subdir_path = os.path.join(abs_task_work_dir, input_hash) # <-- Use hash here
-
-        # Define the output filename (can keep the index for clarity within the hash dir)
         count_output_filename = f"count_{i+1:02d}.txt"
         abs_count_output_file = os.path.join(part_subdir_path, count_output_filename)
+
+        # Define path for the command log file for this specific part
+        command_log_file_path = os.path.join(part_subdir_path, ".command.sh")
 
         command = f"bash \"{script_path}\" \"{file_path}\" > \"{abs_count_output_file}\""
 
@@ -67,7 +69,15 @@ def run_word_count_on_list(split_files_list, task_work_dir, config):
             print(f"  [Task Logic] run_word_count_on_list: Creating subdirectory '{part_subdir_path}' for input '{os.path.basename(file_path)}'")
             os.makedirs(part_subdir_path, exist_ok=True)
 
-            run_shell(command, cwd=abs_task_work_dir)
+            # Create symlink for the specific input file for this part
+            _create_input_symlink(file_path, part_subdir_path, link_prefix="input_split")
+
+            # Call run_shell, passing the path for the command log file
+            run_shell(
+                command,
+                cwd=part_subdir_path, # Run the command within the specific part's directory
+                command_log_file=command_log_file_path
+            )
 
             with open(abs_count_output_file, 'r') as f_count:
                 count_str = f_count.read().strip()
@@ -90,9 +100,11 @@ def run_word_count_on_list(split_files_list, task_work_dir, config):
     return counts
 
 
-# --- sum_counts remains the same ---
+# --- sum_counts ---
+# Doesn't call run_shell, so no command log needed here unless we add one.
+# Input linking is handled by _run_task_in_process.
 def sum_counts(counts_list, final_output_filename, task_work_dir, config):
-    # ... (no changes here) ...
+    # ... (no changes needed here, input links created by core) ...
     print(f"  [Task Logic] sum_counts: Summing list: {counts_list}"); total = sum(counts_list)
     print(f"  [Task Logic] sum_counts: Total count is {total}")
     global_params = config.get("global_params", {}); output_dir_rel = global_params.get("output_dir")

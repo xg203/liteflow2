@@ -1,3 +1,4 @@
+# File: pyflow_core.py
 import functools
 import subprocess
 import inspect
@@ -8,27 +9,44 @@ import concurrent.futures
 import time
 import traceback
 from enum import Enum
-import pickle # Added for potential complex object handling if needed later
+import pickle
+import shlex # Import shlex for safer command construction/logging
 
-# --- Task State Enum ---
-# (Same as before)
-class TaskStatus(Enum):
-    PENDING = 1
-    RUNNING = 2
-    COMPLETED = 3
-    FAILED = 4
-    CANCELLED = 5
+# --- Task State Enum (remains the same) ---
+class TaskStatus(Enum): PENDING = 1; RUNNING = 2; COMPLETED = 3; FAILED = 4; CANCELLED = 5
 
-# --- Helper for Shell Commands ---
-# (Same as before)
-def run_shell(command, cwd=None):
-    """Runs a shell command, raises error if it fails."""
-    print(f"  Executing in '{cwd or '.'}': {command}")
+# --- MODIFIED run_shell Helper ---
+def run_shell(command, cwd=None, command_log_file=None):
+    """
+    Runs a shell command, raises error if it fails.
+    Optionally saves the command to a log file.
+    """
+    # Log the command before execution
+    log_entry = f"#!/bin/bash\n# CWD: {os.path.abspath(cwd) if cwd else os.path.abspath('.')}\n\n{command}\n"
+    print(f"  Executing in '{cwd or '.'}': {command}") # Keep console log
+
+    if command_log_file:
+        try:
+            # Ensure directory for log file exists
+            log_dir = os.path.dirname(command_log_file)
+            if log_dir: # Avoid error if path is just filename in CWD
+                 os.makedirs(log_dir, exist_ok=True)
+            with open(command_log_file, 'w') as f_cmd:
+                f_cmd.write(log_entry)
+            os.chmod(command_log_file, 0o755) # Make it executable
+            print(f"  Command saved to: {command_log_file}")
+        except Exception as e:
+            # Don't fail the task just because command logging failed
+            print(f"  Warning: Failed to save command to {command_log_file}: {e}")
+
+    # Execute the command
     try:
         if cwd:
             os.makedirs(cwd, exist_ok=True)
         result = subprocess.run(
-            command, shell=True, check=True, capture_output=True, text=True, cwd=cwd
+            command, shell=True, check=True, capture_output=True, text=True, cwd=cwd,
+            # Use executable=/bin/bash ? Might improve consistency
+            # executable='/bin/bash'
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
@@ -38,403 +56,291 @@ def run_shell(command, cwd=None):
         print(f"  STDERR:\n{e.stderr}")
         raise
 
-# --- Task Output Placeholder ---
-# (Mostly same, workflow reference less critical now for execution)
+# --- TaskOutput class (remains the same) ---
 class TaskOutput:
-    """Represents the future output of a task call."""
+    # ... (no changes needed) ...
     def __init__(self, workflow, task_func, call_args, call_kwargs):
-        self.workflow = workflow # Still useful for definition phase
-        self.task_func = task_func # The actual user function object
-        self.call_args = tuple(call_args)
-        self.call_kwargs = tuple(sorted(call_kwargs.items()))
+        self.workflow = workflow; self.task_func = task_func
+        self.call_args = tuple(call_args); self.call_kwargs = tuple(sorted(call_kwargs.items()))
         self.id = self._generate_id()
-
     def _generate_id(self):
-        """Creates a unique ID for a specific task call."""
         try:
             def prep_for_hash(item):
-                if isinstance(item, TaskOutput):
-                    return item.id
-                # Basic check for unhashable types that json can handle
-                if isinstance(item, (list, dict)):
-                     return json.dumps(item, sort_keys=True)
+                if isinstance(item, TaskOutput): return item.id
+                if isinstance(item, (list, dict)): return json.dumps(item, sort_keys=True)
                 return item
-
             args_for_hash = tuple(prep_for_hash(a) for a in self.call_args)
             kwargs_for_hash = tuple((k, prep_for_hash(v)) for k, v in self.call_kwargs)
             arg_string = json.dumps((args_for_hash, kwargs_for_hash), sort_keys=True)
-        except TypeError:
-             arg_string = str((args_for_hash, kwargs_for_hash))
-
-        id_string = f"{self.task_func.__name__}:{arg_string}"
-        return hashlib.md5(id_string.encode()).hexdigest()[:10]
-
+        except TypeError: arg_string = str((args_for_hash, kwargs_for_hash))
+        id_string = f"{self.task_func.__name__}:{arg_string}"; return hashlib.md5(id_string.encode()).hexdigest()[:10]
     def get_dependencies(self):
-        """Find TaskOutput instances within the call arguments."""
-        deps = set()
+        deps = set();
         for arg in self.call_args:
-            if isinstance(arg, TaskOutput):
-                deps.add(arg.id)
+            if isinstance(arg, TaskOutput): deps.add(arg.id)
         for _, value in self.call_kwargs:
-            if isinstance(value, TaskOutput):
-                deps.add(value.id)
+            if isinstance(value, TaskOutput): deps.add(value.id)
         return deps
-
-    def __repr__(self):
-        return f"<TaskOutput of {self.task_func.__name__} (ID: {self.id})>"
-
-    def __hash__(self):
-        return hash(self.id)
-
-    def __eq__(self, other):
-        return isinstance(other, TaskOutput) and self.id == other.id
+    def __repr__(self): return f"<TaskOutput of {self.task_func.__name__} (ID: {self.id})>"
+    def __hash__(self): return hash(self.id)
+    def __eq__(self, other): return isinstance(other, TaskOutput) and self.id == other.id
 
 
-# ****** NEW: Top-Level Function for Executor ******
-# This function MUST be defined at the module level so pickle can find it.
+# --- MODIFIED Top-Level Function for Executor (_run_task_in_process) ---
+def _create_input_symlink(source_path, link_dir, link_prefix="input"):
+    """Helper function to create a symlink for an input file/dir."""
+    # Check if source exists and is a string path
+    if not isinstance(source_path, str) or not os.path.exists(source_path):
+        # print(f"  [Linker] Skipping non-existent or non-path input: {source_path}")
+        return # Skip things that aren't existing paths
+
+    abs_source_path = os.path.abspath(source_path)
+    link_basename = os.path.basename(abs_source_path)
+    link_name = os.path.join(link_dir, f"{link_prefix}_{link_basename}")
+
+    # Avoid creating link loops (linking work dir inside itself) - simple check
+    abs_link_dir = os.path.abspath(link_dir)
+    if abs_source_path.startswith(abs_link_dir):
+         print(f"  [Linker] Warning: Skipping potentially recursive link for {abs_source_path} in {abs_link_dir}")
+         return
+
+    try:
+        # Ensure target directory exists
+        os.makedirs(link_dir, exist_ok=True)
+        # Create symlink - remove existing if it's already there (e.g., from retry)
+        if os.path.lexists(link_name):
+             os.remove(link_name)
+        os.symlink(abs_source_path, link_name)
+        print(f"  [Linker] Linked input: '{link_name}' -> '{abs_source_path}'")
+    except Exception as e:
+        # Don't fail task for linking error, just warn
+        print(f"  [Linker] Warning: Failed to link input '{abs_source_path}' to '{link_name}': {e}")
+
+
 def _run_task_in_process(user_func, task_id, func_name, args, kwargs, work_dir, config):
     """
     Executes the user's task function in a separate process.
-    Receives all necessary data directly, avoiding reliance on Workflow state.
+    Creates input symlinks before running.
     """
     print(f"  [Executor PID {os.getpid()}] Preparing task: {func_name} (ID: {task_id})")
     print(f"  [Executor PID {os.getpid()}] Working directory: {work_dir}")
     os.makedirs(work_dir, exist_ok=True) # Ensure dir exists
 
+    # --- Create Input Symlinks ---
+    print(f"  [Executor PID {os.getpid()}] Creating input symlinks...")
+    input_counter = 0
+    # Link positional arguments
+    for i, arg in enumerate(args):
+        if isinstance(arg, (list, tuple)):
+            for item_idx, item in enumerate(arg):
+                 _create_input_symlink(item, work_dir, link_prefix=f"input_arg{i}_item{item_idx}")
+        else:
+            _create_input_symlink(arg, work_dir, link_prefix=f"input_arg{i}")
+
+    # Link keyword arguments
+    for key, value in kwargs.items():
+         if isinstance(value, (list, tuple)):
+             for item_idx, item in enumerate(value):
+                 _create_input_symlink(item, work_dir, link_prefix=f"input_{key}_item{item_idx}")
+         else:
+            _create_input_symlink(value, work_dir, link_prefix=f"input_{key}")
+
+
     # Inject task_work_dir and config if function expects them
     final_kwargs = dict(kwargs) # Copy original kwargs
     sig = inspect.signature(user_func)
     if "task_work_dir" in sig.parameters:
-        final_kwargs["task_work_dir"] = work_dir
+        # Pass the absolute path for consistency
+        final_kwargs["task_work_dir"] = os.path.abspath(work_dir)
     if "config" in sig.parameters:
-        final_kwargs["config"] = config # Pass the config dictionary
+        final_kwargs["config"] = config
 
-    print(f"  [Executor PID {os.getpid()}] Executing task: {func_name} (ID: {task_id}) with args={args}, kwargs={final_kwargs}")
+    print(f"  [Executor PID {os.getpid()}] Executing task: {func_name} (ID: {task_id})") # Simplified log
     try:
         # CALL THE ACTUAL USER FUNCTION with resolved arguments
         result = user_func(*args, **final_kwargs)
         print(f"  [Executor PID {os.getpid()}] Finished task: {func_name} (ID: {task_id}) Result: {result}")
-        # Attempt to pickle result - can fail for complex non-pickleable objects
-        # try:
-        #      pickle.dumps(result)
-        # except Exception as pickle_err:
-        #      print(f"Warning: Result of task {func_name} (ID: {task_id}) might not be pickleable: {pickle_err}")
-        #      # Decide how to handle: convert to string? return None? raise specific error?
-        #      # For now, let the ProcessPoolExecutor handle the potential error during result transfer
         return result
     except Exception as e:
         print(f"  [Executor PID {os.getpid()}] FAILED task: {func_name} (ID: {task_id})")
         tb_str = traceback.format_exc()
-        # Raise a new exception containing the original traceback string
-        # This helps ensure the error information propagates back reliably
         raise RuntimeError(f"Task {func_name} (ID: {task_id}) failed in executor process.\nTraceback:\n{tb_str}") from e
 
 
-# --- Workflow Class ---
+# --- Workflow Class (remains largely the same, minor adjustments) ---
 class Workflow:
     def __init__(self, work_dir="_pyflow_work", max_workers=None, config_file=None):
-        # ... (init registry, work_dir, max_workers, config - same as before) ...
         self.task_registry = {}
-        self._work_dir = work_dir
+        # Ensure work_dir is absolute at init time
+        self._work_dir = os.path.abspath(work_dir)
         self.max_workers = max_workers or os.cpu_count()
-        self.config = self._load_config(config_file)
+        # Config is now loaded externally in pipeline.py before init,
+        # but keep _load_config helper method internally.
+        self.config = {} # Initialize as empty dict
 
-        # Execution State (reset before each run)
-        self.task_calls = {} # id -> TaskOutput object
-        self.task_results = {} # id -> actual result (path, value, etc.)
-        self.task_status = {} # id -> TaskStatus
-        # self.task_futures = {} # No longer needed to map future -> id directly here
-        self.task_dependencies = {} # id -> set(dependency_ids)
-        self.task_dependents = {} # id -> set(dependent_ids)
+        self.task_calls = {}
+        self.task_results = {}
+        self.task_status = {}
+        self.task_dependencies = {}
+        self.task_dependents = {}
 
+        # No need to pass config_file here anymore
         print(f"Workflow initialized: work_dir='{self._work_dir}', max_workers={self.max_workers}")
-        if self.config:
-             print(f"Loaded config from '{config_file}'")
 
-
-    # _load_config method remains the same
+    # _load_config method remains available but called externally now
     def _load_config(self, config_file):
         """Loads configuration from a JSON file."""
+        # ... (same as before) ...
         if config_file:
             if os.path.exists(config_file):
                 with open(config_file, 'r') as f:
-                    try:
-                        return json.load(f)
-                    except json.JSONDecodeError as e:
-                        print(f"Error decoding JSON from {config_file}: {e}")
-                        raise
-            else:
-                raise FileNotFoundError(f"Config file not found: {config_file}")
-        return {} # Return empty dict if no config file specified
-
+                    try: return json.load(f)
+                    except json.JSONDecodeError as e: print(f"Error decoding JSON from {config_file}: {e}"); raise
+            else: raise FileNotFoundError(f"Config file not found: {config_file}")
+        return {}
 
     # task decorator remains the same
     def task(self, func):
-        """Decorator to register a task with this workflow instance."""
-        if func.__name__ in self.task_registry:
-            print(f"Warning: Task '{func.__name__}' already registered. Overwriting.")
+        # ... (same as before) ...
+        if func.__name__ in self.task_registry: print(f"Warning: Task '{func.__name__}' registered.")
         self.task_registry[func.__name__] = func
-
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
             task_output = TaskOutput(self, func, args, kwargs)
-            if task_output.id not in self.task_calls:
-                 self.task_calls[task_output.id] = task_output
-            # Add task to registry if not already there (idempotent)
-            if func.__name__ not in self.task_registry:
-                 self.task_registry[func.__name__] = func
+            if task_output.id not in self.task_calls: self.task_calls[task_output.id] = task_output
+            if func.__name__ not in self.task_registry: self.task_registry[func.__name__] = func
             return task_output
         return wrapper
 
-    # _execute_task method is REMOVED.
 
     # _build_dag method remains the same
     def _build_dag(self, final_target_id):
-        """Traverse dependencies from the target to build the DAG."""
-        queue = [final_target_id]
-        visited = set()
+        # ... (same as before) ...
+        queue = [final_target_id]; visited = set()
         while queue:
             current_id = queue.pop(0)
-            if current_id in visited:
-                continue
+            if current_id in visited: continue
             visited.add(current_id)
-
-            if current_id not in self.task_calls:
-                 # Handle case where a non-TaskOutput might be part of the graph (e.g., initial value)
-                 # Or if the target itself wasn't a TaskOutput initially passed to run()
-                 if current_id == final_target_id and not isinstance(final_target_id, TaskOutput):
-                     print(f"Target {final_target_id} is not a task output.")
-                     # Decide if this is an error or just means no tasks need to run
-                 else:
-                     # This shouldn't normally happen if all dependencies are TaskOutputs
-                     print(f"Warning: ID {current_id} required by DAG but not found in task calls.")
-                 continue # Skip nodes that aren't defined tasks
-
-            task_output = self.task_calls[current_id]
-            deps = task_output.get_dependencies()
-            self.task_dependencies[current_id] = deps
-            self.task_status[current_id] = TaskStatus.PENDING # Initialize status
-
+            if current_id not in self.task_calls: continue
+            task_output = self.task_calls[current_id]; deps = task_output.get_dependencies()
+            self.task_dependencies[current_id] = deps; self.task_status[current_id] = TaskStatus.PENDING
             for dep_id in deps:
-                if dep_id not in self.task_dependents:
-                    self.task_dependents[dep_id] = set()
+                if dep_id not in self.task_dependents: self.task_dependents[dep_id] = set()
                 self.task_dependents[dep_id].add(current_id)
                 if dep_id not in visited:
-                    # Ensure the dependency itself is a task we know about
-                    if dep_id in self.task_calls and dep_id not in queue:
-                         queue.append(dep_id)
-                    elif dep_id not in self.task_calls:
-                         # This dependency refers to something not defined via @task
-                         print(f"Warning: Dependency ID {dep_id} needed by {current_id} not found in defined task calls.")
+                    if dep_id in self.task_calls and dep_id not in queue: queue.append(dep_id)
+                    elif dep_id not in self.task_calls: print(f"Warning: Dependency ID {dep_id} missing.")
 
 
+    # run method remains largely the same (submission part)
     def run(self, final_task_output):
-        """Runs the workflow required to produce the final_task_output using parallelism."""
-        if not isinstance(final_task_output, TaskOutput):
-            print("Final target is not a TaskOutput. Nothing to run.")
-            return final_task_output
-        if final_task_output.workflow is not self:
-            raise ValueError("TaskOutput belongs to a different Workflow instance.")
-
-        # --- Reset state for this run ---
-        self.task_results = {}
-        self.task_status = {}
-        # self.task_futures = {} # Removed
-        self.task_dependencies = {}
-        self.task_dependents = {}
+        # ... (Setup, state reset, DAG build - same as before) ...
+        if not isinstance(final_task_output, TaskOutput): print("Final target is not a TaskOutput."); return final_task_output
+        if final_task_output.workflow is not self: raise ValueError("TaskOutput belongs to different Workflow.")
+        self.task_results = {}; self.task_status = {}; self.task_dependencies = {}; self.task_dependents = {}
         os.makedirs(self._work_dir, exist_ok=True)
-
         target_id = final_task_output.id
         print(f"\n--- Building Workflow DAG for target: {target_id} ---")
         self._build_dag(target_id)
-        # Filter out any IDs that aren't actually tasks (could happen with warnings above)
         required_tasks = {tid for tid in self.task_status if tid in self.task_calls}
-        if not required_tasks:
-             print("No tasks found in the DAG leading to the target.")
-             # Need to decide what to return - maybe the target if it wasn't a TaskOutput?
-             # For now, assume target requires tasks if it's a TaskOutput.
-             if target_id in self.task_calls:
-                 print("Error: Target is a task but no DAG path found?") # Should not happen if _build_dag is correct
-                 raise RuntimeError("Internal DAG building error.")
-             else:
-                  return final_task_output # Target was likely a primitive value
-
+        if not required_tasks: print("No tasks found in DAG."); return final_task_output
         print(f"Tasks involved: {len(required_tasks)}")
-
         print(f"\n--- Starting Parallel Execution (max_workers={self.max_workers}) ---")
-        start_time = time.time()
-        tasks_failed = set()
-        tasks_completed = set()
-        active_futures = {} # future -> task_id (map from future back to task)
+        start_time = time.time(); tasks_failed = set(); tasks_completed = set()
+        active_futures = {}
 
-        # Use ProcessPoolExecutor for CPU-bound or external calls
-        # Use 'spawn' context if needed on macOS/Windows for compatibility, though default usually works
-        # import multiprocessing
-        # context = multiprocessing.get_context('spawn')
-        # with concurrent.futures.ProcessPoolExecutor(max_workers=self.max_workers, mp_context=context) as executor:
         with concurrent.futures.ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-
             while len(tasks_completed) + len(tasks_failed) < len(required_tasks):
                 ready_to_submit = []
-                # Find tasks ready to run
                 for task_id in list(required_tasks - tasks_completed - tasks_failed):
                     if self.task_status.get(task_id) == TaskStatus.PENDING:
                         deps = self.task_dependencies.get(task_id, set())
-                        # Ensure all dependencies exist in results (are completed)
                         if all(dep_id in self.task_results for dep_id in deps):
                              ready_to_submit.append(task_id)
 
-                # Submit ready tasks
                 for task_id in ready_to_submit:
                     task_output = self.task_calls[task_id]
-                    func = task_output.task_func # The actual user function object
-                    func_name = func.__name__
-                    args = task_output.call_args
-                    kwargs = dict(task_output.call_kwargs) # Need dict for processing
-
-                    # Resolve dependencies using already computed results
-                    resolved_args = []
-                    try:
-                        for arg in args:
-                            if isinstance(arg, TaskOutput):
-                                resolved_args.append(self.task_results[arg.id])
-                            else:
-                                resolved_args.append(arg)
+                    func = task_output.task_func; func_name = func.__name__
+                    args = task_output.call_args; kwargs = dict(task_output.call_kwargs)
+                    resolved_args = []; resolved_kwargs = {}
+                    try: # Resolve dependencies
+                        for arg in args: resolved_args.append(self.task_results[arg.id] if isinstance(arg, TaskOutput) else arg)
+                        for key, value in kwargs.items(): resolved_kwargs[key] = self.task_results[value.id] if isinstance(value, TaskOutput) else value
                     except KeyError as e:
-                         print(f"Error: Dependency result missing for task {task_id} -> {func_name}. Missing key: {e}")
-                         # This indicates a logic error in dependency tracking or completion status
-                         self.task_status[task_id] = TaskStatus.FAILED
-                         tasks_failed.add(task_id)
-                         # Need to decide how to handle this - stop workflow? Continue?
-                         # For now, mark as failed and let failure propagation handle downstream
-                         continue # Don't submit this task
+                         print(f"Error: Dependency result missing for task {task_id} -> {func_name}. Missing key: {e}");
+                         self.task_status[task_id] = TaskStatus.FAILED; tasks_failed.add(task_id); continue
 
-                    resolved_kwargs = {}
-                    try:
-                        for key, value in kwargs.items():
-                            if isinstance(value, TaskOutput):
-                                resolved_kwargs[key] = self.task_results[value.id]
-                            else:
-                                resolved_kwargs[key] = value
-                    except KeyError as e:
-                         print(f"Error: Dependency result missing for task {task_id} -> {func_name}. Missing key: {e}")
-                         self.task_status[task_id] = TaskStatus.FAILED
-                         tasks_failed.add(task_id)
-                         continue
-
-                    # Define the specific work directory for this task execution
+                    # Define the specific work directory for this task execution (absolute path)
                     task_work_dir = os.path.join(self._work_dir, func_name, task_id)
 
                     print(f"Submitting task: {func_name} (ID: {task_id})")
                     self.task_status[task_id] = TaskStatus.RUNNING
 
-                    # Submit the NEW top-level execution function
                     future = executor.submit(
                         _run_task_in_process, # The pickleable top-level function
-                        user_func=func,       # The user's task function object
-                        task_id=task_id,
-                        func_name=func_name,
-                        args=tuple(resolved_args), # Pass resolved args directly
-                        kwargs=resolved_kwargs,    # Pass resolved kwargs directly
-                        work_dir=task_work_dir,    # Pass specific work dir
-                        config=self.config         # Pass config dict
+                        user_func=func, task_id=task_id, func_name=func_name,
+                        args=tuple(resolved_args), kwargs=resolved_kwargs,
+                        work_dir=task_work_dir, # Pass absolute path to task work dir
+                        config=self.config
                     )
-                    active_futures[future] = task_id # Map future back to task_id
+                    active_futures[future] = task_id
 
                 # --- Wait for results (same logic as before) ---
                 if not active_futures and len(tasks_completed) + len(tasks_failed) < len(required_tasks):
-                    # Check if maybe some tasks failed to submit due to missing results
-                    # Or if the loop termination condition is met
-                    all_tasks_accounted_for = (len(tasks_completed) + len(tasks_failed)) == len(required_tasks)
-                    if not all_tasks_accounted_for:
-                        print("Warning: No tasks running, but workflow not complete. Check for errors.")
-                        # Log pending tasks and their unmet dependencies
-                        for tid in required_tasks - tasks_completed - tasks_failed:
+                    if (len(tasks_completed) + len(tasks_failed)) != len(required_tasks):
+                         print("Warning: No tasks running, but workflow not complete.")
+                         for tid in required_tasks - tasks_completed - tasks_failed:
                              if self.task_status.get(tid) == TaskStatus.PENDING:
-                                 unmet_deps = [dep for dep in self.task_dependencies.get(tid, set()) if dep not in self.task_results]
-                                 print(f"  - Task {tid} ({self.task_calls[tid].task_func.__name__}) pending. Unmet deps: {unmet_deps}")
-                    break # Avoid busy loop
+                                 unmet = [dep for dep in self.task_dependencies.get(tid, set()) if dep not in self.task_results]
+                                 print(f"  - Task {tid} ({self.task_calls[tid].task_func.__name__}) pending. Unmet: {unmet}")
+                    break
+                if not active_futures: break
 
-                if not active_futures:
-                    break # Exit outer loop if nothing more is running
+                done, _ = concurrent.futures.wait(active_futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
 
-                # Wait for at least one future to complete
-                done, _ = concurrent.futures.wait(
-                    active_futures.keys(),
-                    return_when=concurrent.futures.FIRST_COMPLETED
-                )
-
-                # Process completed futures
                 for future in done:
-                    task_id = active_futures.pop(future) # Remove from active map
+                    task_id = active_futures.pop(future)
                     task_name = self.task_calls[task_id].task_func.__name__
                     try:
-                        result = future.result() # Get result or raise exception from worker process
-                        self.task_results[task_id] = result
-                        self.task_status[task_id] = TaskStatus.COMPLETED
-                        tasks_completed.add(task_id)
-                        print(f"Task Completed: {task_name} (ID: {task_id})")
-
+                        result = future.result()
+                        self.task_results[task_id] = result; self.task_status[task_id] = TaskStatus.COMPLETED
+                        tasks_completed.add(task_id); print(f"Task Completed: {task_name} (ID: {task_id})")
                     except Exception as e:
-                        self.task_status[task_id] = TaskStatus.FAILED
-                        tasks_failed.add(task_id)
-                        print(f"!!! Task FAILED: {task_name} (ID: {task_id}) !!!")
-                        # Error message 'e' should now include the traceback from the executor process
-                        print(f"  Error: {e}")
-
-                        # --- Failure Propagation (same logic as before) ---
-                        cancel_queue = list(self.task_dependents.get(task_id, set()))
-                        visited_cancel = {task_id} # Start with the failed task
+                        self.task_status[task_id] = TaskStatus.FAILED; tasks_failed.add(task_id)
+                        print(f"!!! Task FAILED: {task_name} (ID: {task_id}) !!!\n  Error: {e}")
+                        # --- Failure Propagation (same logic) ---
+                        cancel_queue = list(self.task_dependents.get(task_id, set())); visited_cancel = {task_id}
                         while cancel_queue:
                             dependent_id = cancel_queue.pop(0)
                             if dependent_id in visited_cancel: continue
                             visited_cancel.add(dependent_id)
-
-                            if dependent_id in self.task_calls: # Ensure it's a known task
-                                # Only cancel PENDING tasks
+                            if dependent_id in self.task_calls:
                                 if self.task_status.get(dependent_id) == TaskStatus.PENDING:
-                                    self.task_status[dependent_id] = TaskStatus.CANCELLED
-                                    tasks_failed.add(dependent_id) # Count cancelled as failed for completion
+                                    self.task_status[dependent_id] = TaskStatus.CANCELLED; tasks_failed.add(dependent_id)
                                     print(f"  -> Cancelling downstream: {self.task_calls[dependent_id].task_func.__name__} (ID: {dependent_id})")
-                                    # Add its dependents to the queue
                                     for next_dep_id in self.task_dependents.get(dependent_id, set()):
-                                          if next_dep_id not in visited_cancel:
-                                              cancel_queue.append(next_dep_id)
-                            else:
-                                print(f"Warning: Trying to cancel unknown downstream ID: {dependent_id}")
+                                          if next_dep_id not in visited_cancel: cancel_queue.append(next_dep_id)
+                            else: print(f"Warning: Trying to cancel unknown ID: {dependent_id}")
 
-
-        # --- End of Execution (Summary) ---
-        # (Same summary logic as before)
-        end_time = time.time()
-        print(f"\n--- Workflow Execution Summary ---")
+        # --- End of Execution (Summary - same logic) ---
+        end_time = time.time(); print(f"\n--- Workflow Execution Summary ---")
         print(f"Total time: {end_time - start_time:.2f} seconds")
-        print(f"Tasks Completed: {len(tasks_completed)}")
-        print(f"Tasks Failed/Cancelled: {len(tasks_failed)}")
-
+        print(f"Tasks Completed: {len(tasks_completed)}"); print(f"Tasks Failed/Cancelled: {len(tasks_failed)}")
         if target_id in tasks_failed or self.task_status.get(target_id) != TaskStatus.COMPLETED:
              print("\n!!! Workflow did not complete successfully !!!")
-             for tid in sorted(list(tasks_failed)): # Sort for consistent output
-                 if tid in self.task_calls: # Check if it's a known task
-                     status = self.task_status.get(tid, "UNKNOWN")
-                     print(f"  - {self.task_calls[tid].task_func.__name__} (ID: {tid}): {status.name}")
-                 else:
-                     print(f"  - Unknown Task (ID: {tid}): FAILED/CANCELLED")
-
-             # Optionally print results dict for debugging
-             # print("\nTask Results:")
-             # for tid, res in self.task_results.items():
-             #     print(f"  - {tid}: {res}")
-
+             for tid in sorted(list(tasks_failed)):
+                 if tid in self.task_calls: print(f"  - {self.task_calls[tid].task_func.__name__} (ID: {tid}): {self.task_status.get(tid, 'UNKNOWN').name}")
+                 else: print(f"  - Unknown Task (ID: {tid}): FAILED/CANCELLED")
              raise RuntimeError("Workflow execution failed.")
         else:
              print("\n--- Workflow finished successfully ---")
-             return self.task_results.get(target_id) # Return the final result
+             return self.task_results.get(target_id)
 
     # cleanup method remains the same
     def cleanup(self):
-        """Removes the working directory."""
         import shutil
         if os.path.exists(self._work_dir):
             print(f"Cleaning up working directory: {self._work_dir}")
             shutil.rmtree(self._work_dir)
+        else:
+            print(f"Working directory not found, skipping cleanup: {self._work_dir}")
