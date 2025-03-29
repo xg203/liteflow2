@@ -1,6 +1,7 @@
 {
   "global_params": {
     "output_dir": "results_structured",
+    "work_dir": "_workflow_intermediate_files", 
     "pipeline_description": "Word count split-map-reduce example"
   },
   "tasks": {
