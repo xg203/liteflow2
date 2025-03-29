@@ -1,5 +1,6 @@
 {
   "input_file": "input.txt",
   "num_splits": 4,
+  "output_dir": "results",
   "other_config_param": "example"
 }
