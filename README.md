@@ -74,7 +74,7 @@ python pipeline.py --config config.json
 python pipeline.py --config config.json --cleanup
 ```
 
-##Current Limitations
+## Current Limitations
 * No Caching: Tasks are re-executed every time the workflow runs, even if inputs haven't changed. There is no persistent caching between runs.
 * Limited Container Support: Basic Docker integration via config toggle. No support for Singularity, complex orchestration (like Kubernetes), or specifying resource limits within containers.
 * Basic Input/Output Handling: Primarily focused on passing file paths (as strings) and basic Python objects (lists, numbers). No explicit system for handling directories robustly or guaranteeing serialization of complex custom objects between processes.
