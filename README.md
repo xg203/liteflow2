@@ -72,35 +72,23 @@ python pipeline.py --config config.json
 
 # Clean up the intermediate work directory before running
 python pipeline.py --config config.json --cleanup
+```
 
 ##Current Limitations
-No Caching: Tasks are re-executed every time the workflow runs, even if inputs haven't changed. There is no persistent caching between runs.
-
-Limited Container Support: Basic Docker integration via config toggle. No support for Singularity, complex orchestration (like Kubernetes), or specifying resource limits within containers.
-
-Basic Input/Output Handling: Primarily focused on passing file paths (as strings) and basic Python objects (lists, numbers). No explicit system for handling directories robustly or guaranteeing serialization of complex custom objects between processes.
-
-Basic Scheduling: Dependency-driven execution only. No support for task retries, time limits, conditional execution based on output content, etc.
-
-No Task Mapping/Scattering: Tasks processing list inputs (like the word count example) loop internally; the engine doesn't automatically parallelize across list items by invoking multiple task instances.
-
-Local Execution Only: Designed to run on a single machine using multiple processes (potentially within Docker containers). No support for submitting jobs to HPC schedulers (SLURM, SGE, LSF, etc.) or cloud batch systems.
-
-Rudimentary DAG: The dependency graph is built implicitly and used for execution, but there's no upfront DAG analysis, cycle detection, or visualization capability.
-
-Basic Error Propagation: Basic cancellation of downstream tasks on failure. More sophisticated strategies (e.g., ignore failures, collect outputs anyway) are not implemented.
+* No Caching: Tasks are re-executed every time the workflow runs, even if inputs haven't changed. There is no persistent caching between runs.
+* Limited Container Support: Basic Docker integration via config toggle. No support for Singularity, complex orchestration (like Kubernetes), or specifying resource limits within containers.
+* Basic Input/Output Handling: Primarily focused on passing file paths (as strings) and basic Python objects (lists, numbers). No explicit system for handling directories robustly or guaranteeing serialization of complex custom objects between processes.
+* Basic Scheduling: Dependency-driven execution only. No support for task retries, time limits, conditional execution based on output content, etc.
+* No Task Mapping/Scattering: Tasks processing list inputs (like the word count example) loop internally; the engine doesn't automatically parallelize across list items by invoking multiple task instances.
+* Local Execution Only: Designed to run on a single machine using multiple processes (potentially within Docker containers). No support for submitting jobs to HPC schedulers (SLURM, SGE, LSF, etc.) or cloud batch systems.
+* Rudimentary DAG: The dependency graph is built implicitly and used for execution, but there's no upfront DAG analysis, cycle detection, or visualization capability.
+* Basic Error Propagation: Basic cancellation of downstream tasks on failure. More sophisticated strategies (e.g., ignore failures, collect outputs anyway) are not implemented.
 
 ## Next Steps / Roadmap
-Robust Caching: Implement persistent caching based on hashing inputs (arguments, config, input file content/timestamps) and checking output existence/integrity.
-
-Enhanced Container Integration: Add support for Singularity, allow specifying container resources (CPUs, memory), improve volume handling and path mapping robustness.
-
-Task Mapping/Scattering: Implement engine support to automatically parallelize a task across elements of an input list/channel (like Nextflow processes or Snakemake's expand).
-
-Input/Output Type System: Introduce explicit types (e.g., File, Directory, Str, Int) for task inputs/outputs to enable better validation, handling, and potentially more robust serialization.
-
-Enhanced Error Handling: Implement task retry mechanisms (e.g., configured per task).
-
-Explicit DAG Management: Build the Directed Acyclic Graph explicitly before execution, allowing for cycle detection and potentially visualization (e.g., using Graphviz).
-
-(Ambitious) Basic Executor Plugins: Develop support for different execution environments, starting potentially with a simple SLURM backend.
+* Robust Caching: Implement persistent caching based on hashing inputs (arguments, config, input file content/timestamps) and checking output existence/integrity.
+* Enhanced Container Integration: Add support for Singularity, allow specifying container resources (CPUs, memory), improve volume handling and path mapping robustness.
+* Task Mapping/Scattering: Implement engine support to automatically parallelize a task across elements of an input list/channel (like Nextflow processes or Snakemake's expand).
+* Input/Output Type System: Introduce explicit types (e.g., File, Directory, Str, Int) for task inputs/outputs to enable better validation, handling, and potentially more robust serialization.
+* Enhanced Error Handling: Implement task retry mechanisms (e.g., configured per task).
+* Explicit DAG Management: Build the Directed Acyclic Graph explicitly before execution, allowing for cycle detection and potentially visualization (e.g., using Graphviz).
+* (Ambitious) Basic Executor Plugins: Develop support for different execution environments, starting potentially with a simple SLURM backend.
