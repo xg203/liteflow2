@@ -1,6 +1,30 @@
 {
-  "input_file": "input.txt",
-  "num_splits": 4,
-  "output_dir": "results",
-  "other_config_param": "example"
+  "global_params": {
+    "output_dir": "results_structured",
+    "pipeline_description": "Word count split-map-reduce example"
+  },
+  "tasks": {
+    "file_splitter": {
+      "function": "split_file",
+      "description": "Splits the input file into multiple parts.",
+      "params": {
+        "input_file": "input.txt",
+        "num_splits": 4
+      }
+    },
+    "word_counter": {
+      "function": "run_word_count_on_list",
+      "description": "Counts words in each split file using word_counter.sh.",
+      "params": {
+        "use_custom_script": true
+      }
+    },
+    "result_summer": {
+      "function": "sum_counts",
+      "description": "Sums the counts and writes the total to the final output directory.",
+      "params": {
+        "final_output_filename": "total_count_final.txt"
+      }
+    }
+  }
 }
