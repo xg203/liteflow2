@@ -1,0 +1,4 @@
+This is a sample file for testing.
+LiteFlow will split this file.
+Then it will count the words in each part.
+Finally, it sums the counts.

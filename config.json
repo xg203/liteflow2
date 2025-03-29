@@ -1,6 +1,5 @@
 {
-  "data_content": "configured_data ",
-  "content_multiplier": 2,
-  "wordcount_command": "wc -w",
-  "fail_processing_b": false
+  "input_file": "input.txt",
+  "num_splits": 4,
+  "other_config_param": "example"
 }

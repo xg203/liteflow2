@@ -1,90 +1,127 @@
 # File: my_pipeline.py
 
-from pyflow_core import Workflow # Import Workflow
-# Import the task functions from the new module
-from my_tasks import generate_initial_data as task_generate_initial_data
-from my_tasks import process_data as task_process_data
-from my_tasks import summarize_result as task_summarize_result
+from pyflow_core import Workflow
+from my_tasks import split_file as task_split_file
+from my_tasks import run_word_count_on_list as task_run_word_count_on_list
+from my_tasks import sum_counts as task_sum_counts
 import sys
 import argparse
+import os # Import os
 
 # --- Create a Workflow instance ---
 workflow = Workflow(
-    work_dir="_pyflow_work_separate_tasks", # Changed work dir for clarity
+    work_dir="_pyflow_split_map_reduce_config", # New work dir
     max_workers=4
     # config_file set via CLI
 )
 
 # --- Apply the decorator to the imported functions ---
-# Give them potentially different names if desired, or keep original
-generate_initial_data = workflow.task(task_generate_initial_data)
-process_data = workflow.task(task_process_data)
-summarize_result = workflow.task(task_summarize_result)
-
-# --- Define the Workflow Graph (using the decorated functions) ---
-# This part remains exactly the same syntactically
-print("--- Defining Workflow Structure ---")
-
-data_a = generate_initial_data(filename_base="sampleA")
-data_b = generate_initial_data(filename_base="sampleB")
-
-processed_a = process_data(input_file_path=data_a, suffix="from_A")
-processed_b = process_data(input_file_path=data_b, suffix="from_B")
-
-final_summary = summarize_result(processed_file_a=processed_a, processed_file_b=processed_b)
-
-print("--- Workflow Structure Definition Complete ---")
-if isinstance(final_summary, workflow.task_calls.get(final_summary.id).__class__): # Basic check
-    print(f"Target task ID: {final_summary.id}")
-else:
-     print(f"Final target is not a task output: {final_summary}")
+split_file = workflow.task(task_split_file)
+run_word_count_on_list = workflow.task(task_run_word_count_on_list)
+sum_counts = workflow.task(task_sum_counts)
 
 
 # --- Main Execution Block ---
-# This part remains the same
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the PyFlow prototype pipeline.")
+    parser = argparse.ArgumentParser(description="Run the PyFlow Split-Map-Reduce pipeline using config file.")
+    # Only need config path and cleanup flag now
     parser.add_argument(
-        "-c", "--config", help="Path to JSON configuration file."
-    )
-    parser.add_argument(
-        "--fail-b", action="store_true", help="Intentionally fail the 'process_data' task for branch B."
+        "-c", "--config", required=True, help="Path to JSON configuration file."
     )
     parser.add_argument(
         "--cleanup", action="store_true", help="Clean up the work directory before running."
     )
     args = parser.parse_args()
 
-    # Update workflow config based on CLI args
+    # --- Load Configuration ---
     try:
-        workflow.config = workflow._load_config(args.config) # Load config file if provided
+        # Load the base config first
+        workflow.config = workflow._load_config(args.config)
+        print(f"Loaded configuration from: {args.config}")
     except Exception as e:
-         print(f"Error loading config: {e}", file=sys.stderr)
+         print(f"Error loading config file '{args.config}': {e}", file=sys.stderr)
          sys.exit(1)
 
+    # --- Get Workflow Parameters from Config ---
+    config_input_file = workflow.config.get("input_file")
+    config_num_splits = workflow.config.get("num_splits")
 
-    # Override specific config from CLI for testing failure
-    if args.fail_b:
-         workflow.config["fail_processing_b"] = True
+    if not config_input_file:
+        print("Error: 'input_file' not found in configuration file.", file=sys.stderr)
+        sys.exit(1)
+    if config_num_splits is None: # Check for None explicitly as 0 could be valid (though unlikely here)
+        print("Error: 'num_splits' not found in configuration file.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        # Validate num_splits is an integer > 0
+        config_num_splits = int(config_num_splits)
+        if config_num_splits <= 0:
+             raise ValueError("Number of splits must be positive.")
+    except (ValueError, TypeError) as e:
+         print(f"Error: Invalid value for 'num_splits' in configuration: {e}", file=sys.stderr)
+         sys.exit(1)
 
+    # --- Handle Paths and Script Location ---
+    # Make input path absolute (relative to config file location or CWD?)
+    # Safest: Assume path in config is relative to the CWD where my_pipeline is run
+    abs_input_path = os.path.abspath(config_input_file)
+    if not os.path.exists(abs_input_path):
+        print(f"Error: Input file specified in config not found: {abs_input_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Find the word count script relative to *this* pipeline script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    wc_script_name = "word_counter.sh"
+    wc_script_path = os.path.join(script_dir, wc_script_name)
+
+    if not os.path.exists(wc_script_path):
+        print(f"Error: Word count script '{wc_script_name}' not found in script directory: {script_dir}", file=sys.stderr)
+        sys.exit(1)
+    if not os.access(wc_script_path, os.X_OK):
+        print(f"Error: Word count script '{wc_script_path}' is not executable. Please run: chmod +x {wc_script_name}", file=sys.stderr)
+        sys.exit(1)
+
+    # Inject the absolute script path into the config dictionary that tasks will see
+    workflow.config["word_count_script_path"] = wc_script_path
+    print(f"Using word count script: {wc_script_path}")
+
+    # --- Define the ACTUAL Workflow Graph using config values ---
+    print("\n--- Defining Workflow Structure ---")
+
+    split_files_list_output = split_file(
+        input_path=abs_input_path,
+        num_splits=config_num_splits
+    )
+    counts_list_output = run_word_count_on_list(
+        split_files_list=split_files_list_output
+    )
+    total_count_output = sum_counts(
+        counts_list=counts_list_output
+    )
+
+    print("--- Workflow Structure Definition Complete ---")
+    if hasattr(total_count_output, 'id') and total_count_output.id in workflow.task_calls:
+        print(f"Target task ID: {total_count_output.id}")
+    else:
+        print(f"Final target is not a task output: {total_count_output}")
+
+    # --- Execute ---
     if args.cleanup:
         workflow.cleanup()
 
     try:
         print("\n--- Running Workflow ---")
-        # Check if final_summary is indeed a task output before running
-        if not isinstance(final_summary, workflow.task_calls.get(final_summary.id).__class__ if hasattr(final_summary,'id') and final_summary.id in workflow.task_calls else object):
-             print("Final target is not a runnable task output. Exiting.")
+        if not hasattr(total_count_output, 'id') or total_count_output.id not in workflow.task_calls:
+             print(f"Final target '{total_count_output}' is not a runnable task output. Exiting.")
              sys.exit(0)
 
-        # Execute the workflow by asking for the final desired output
-        final_output_path = workflow.run(final_summary)
+        final_result_value = workflow.run(total_count_output)
 
         print("\n--- Workflow Run Method Finished ---")
-        if final_output_path:
-            print(f"Final output generated at: {final_output_path}")
+        print(f"Final calculated total word count: {final_result_value}")
 
     except Exception as e:
         print(f"\nPipeline execution failed overall: {e}", file=sys.stderr)
-        # traceback.print_exc() # Uncomment for more detail if needed
+        # import traceback
+        # traceback.print_exc()
         sys.exit(1)

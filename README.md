@@ -2,20 +2,21 @@
 
 ## Overview
 
-This project is a prototype for a simple, Python-based workflow management system inspired by [Nextflow](https://www.nextflow.io/). It aims to provide a more "Pythonic" way to define and execute computational pipelines, particularly for users who find Nextflow's Groovy DSL a barrier.
+This project is a prototype for a simple, Python-based workflow management system inspired by [Nextflow](https://www.nextflow.io/). It aims to provide a more "Pythonic" way to define and execute computational pipelines for fun.
 
 The core idea is to define pipeline tasks using Python functions and decorators, automatically handle dependencies based on function inputs/outputs, and manage parallel execution.
+
+Co-author: Google AI Studio, Gemini 2.5 Pro Experimental 3-25
 
 **Status:** Early Prototype
 
 ## Motivation
 
-Nextflow is an incredibly powerful and widely adopted workflow system, especially in bioinformatics. However, its reliance on the Groovy language can be a hurdle for teams primarily working within the Python ecosystem. While tools like Snakemake offer a Python-based alternative, this project explores a different approach focusing on:
+Nextflow is an incredibly powerful and widely adopted workflow system, especially in bioinformatics. While tools like Snakemake offer a Python-based alternative, this project explores a different approach focusing on:
 
 1.  **Simplicity:** Aiming for a lower learning curve compared to the full feature set and DSL of Nextflow or Snakemake.
 2.  **Pythonic Interface:** Leveraging Python decorators (`@task`) and standard Python functions for defining workflows, making it feel natural for Python developers.
-3.  **Avoiding Groovy:** Providing an alternative for users who prefer to stay entirely within Python.
-4.  **Core Workflow Needs:** Focusing initially on essential features like dependency management, parallelism, basic configuration, and shell command execution.
+3.  **Core Workflow Needs:** Focusing initially on essential features like dependency management, parallelism, basic configuration, and shell command execution.
 
 This prototype serves as a proof-of-concept for such a system.
 

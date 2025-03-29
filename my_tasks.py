@@ -1,79 +1,109 @@
 # File: my_tasks.py
 import os
-from pyflow_core import run_shell # Import helpers if needed
+import math
+import subprocess # Keep subprocess for CalledProcessError
+from pyflow_core import run_shell # Import helpers
 
-# Define task logic as plain functions
-# They will receive task_work_dir and config from the engine when called
+# --- split_file and sum_counts remain the same ---
 
-def generate_initial_data(filename_base, task_work_dir, config):
-    """Creates an initial data file, using config."""
-    content = config.get("data_content", "default_content ")
-    multiplier = config.get("content_multiplier", 3)
-
-    output_filename = os.path.join(task_work_dir, f"{filename_base}.txt")
-    abs_output_filename = os.path.abspath(output_filename) # Make path absolute
-
-    with open(abs_output_filename, 'w') as f:
-        f.write(content * multiplier)
-    print(f"  [Task Logic] generate_initial_data: Created {abs_output_filename} with content='{content}', multiplier={multiplier}")
-    return abs_output_filename # Return the absolute path
-
-def process_data(input_file_path, suffix, task_work_dir, config):
-    """Processes the data file using a shell command (e.g., word count)."""
-    # input_file_path should now be absolute from the upstream task
-    output_filename = os.path.join(task_work_dir, f"processed_{suffix}.txt")
-    abs_output_filename = os.path.abspath(output_filename) # Make output path absolute too
-
-    wc_command = config.get("wordcount_command", "wc -w")
-    fail_on_b = config.get("fail_processing_b", False)
-
-    if suffix == "from_B" and fail_on_b:
-        print(f"  [Task Logic] process_data (for B): INTENTIONALLY FAILING as per config")
-        raise RuntimeError("Intentional failure for process_data on branch B")
-    else:
-        # Command uses the absolute input path now
-        command = f"{wc_command} < \"{input_file_path}\" > \"{abs_output_filename}\""
-
-    # Only run shell if not intentionally failing
-    if not (suffix == "from_B" and fail_on_b):
-         abs_task_work_dir = os.path.abspath(task_work_dir) # Make cwd absolute too (good practice)
-         run_shell(command, cwd=abs_task_work_dir) # Use absolute cwd
-         print(f"  [Task Logic] process_data: Created {abs_output_filename}")
-
-    return abs_output_filename # Return the absolute path
-
-def summarize_result(processed_file_a, processed_file_b, task_work_dir):
-    """Reads results from two files and summarizes."""
-    # processed_file_a and processed_file_b should now be absolute paths
-    summary_filename = os.path.join(task_work_dir, "summary.txt")
-    abs_summary_filename = os.path.abspath(summary_filename) # Make path absolute
-
+def split_file(input_path, num_splits, task_work_dir, config):
+    """Splits an input file into N roughly equal parts."""
+    print(f"  [Task Logic] split_file: Splitting '{input_path}' into {num_splits} parts.")
+    output_files = []
     try:
-        with open(processed_file_a, 'r') as f_a:
-            count_a = f_a.read().strip()
+        with open(input_path, 'r') as f_in:
+            lines = f_in.readlines()
+
+        total_lines = len(lines)
+        if total_lines == 0:
+             print("  [Task Logic] split_file: Input file is empty.")
+             lines_per_split = 0
+        else:
+             lines_per_split = math.ceil(total_lines / num_splits)
+
+        for i in range(num_splits):
+            start_line = i * lines_per_split
+            end_line = min((i + 1) * lines_per_split, total_lines)
+            split_lines = lines[start_line:end_line]
+
+            output_filename = os.path.join(task_work_dir, f"split_{i+1:02d}.txt")
+            abs_output_filename = os.path.abspath(output_filename)
+
+            with open(abs_output_filename, 'w') as f_out:
+                f_out.writelines(split_lines)
+
+            print(f"  [Task Logic] split_file: Created '{abs_output_filename}' ({len(split_lines)} lines)")
+            output_files.append(abs_output_filename)
+
+        while len(output_files) < num_splits:
+            i = len(output_files)
+            output_filename = os.path.join(task_work_dir, f"split_{i+1:02d}.txt")
+            abs_output_filename = os.path.abspath(output_filename)
+            with open(abs_output_filename, 'w') as f_out:
+                 pass # Create empty file
+            print(f"  [Task Logic] split_file: Created empty '{abs_output_filename}'")
+            output_files.append(abs_output_filename)
+
     except FileNotFoundError:
-        count_a = "[FILE A NOT FOUND]"
-        print(f"  [Task Logic] summarize_result: File not found {processed_file_a}")
+        print(f"  [Task Logic] split_file: Input file not found '{input_path}'")
+        raise
     except Exception as e:
-        count_a = f"[ERROR READING FILE A: {e}]"
-        print(f"  [Task Logic] summarize_result: Error reading {processed_file_a}: {e}")
+        print(f"  [Task Logic] split_file: Error during splitting: {e}")
+        raise
 
-    try:
-        with open(processed_file_b, 'r') as f_b:
-            count_b = f_b.read().strip()
-    except FileNotFoundError:
-        count_b = "[FILE B NOT FOUND]"
-        print(f"  [Task Logic] summarize_result: File not found {processed_file_b}")
-    except Exception as e:
-        count_b = f"[ERROR READING FILE B: {e}]"
-        print(f"  [Task Logic] summarize_result: Error reading {processed_file_b}: {e}")
+    return output_files
 
+def run_word_count_on_list(split_files_list, task_work_dir, config):
+    """Runs word count SCRIPT on each file in the list and returns a list of counts."""
+    counts = []
+    # Get the path to the script - it should be injected into config by my_pipeline.py
+    script_path = config.get("word_count_script_path")
+    if not script_path or not os.path.exists(script_path):
+         print(f"  [Task Logic] run_word_count_on_list: ERROR - Word count script path not found in config or script missing ('{script_path}')")
+         # Fail the task if script is missing
+         raise FileNotFoundError(f"Word count script not configured or found: {script_path}")
 
-    summary = f"File A count: {count_a}\nFile B count: {count_b}"
+    print(f"  [Task Logic] run_word_count_on_list: Processing {len(split_files_list)} files using script '{script_path}'.")
 
-    with open(abs_summary_filename, 'w') as f_out:
-        f_out.write(summary)
+    for i, file_path in enumerate(split_files_list):
+        # Output file for the count result itself (optional but can be useful)
+        count_output_file = os.path.join(task_work_dir, f"count_{i+1:02d}.txt")
+        abs_count_output_file = os.path.abspath(count_output_file)
 
-    print(f"  [Task Logic] summarize_result: Created {abs_summary_filename}")
-    print(f"  [Task Logic] --- Summary ---:\n{summary}")
-    return abs_summary_filename # Return the absolute path
+        # Construct the command to run the script, passing the split file path
+        # Ensure paths are quoted for safety
+        command = f"bash \"{script_path}\" \"{file_path}\" > \"{abs_count_output_file}\""
+
+        try:
+            # run_shell executes the command and checks for errors
+            run_shell(command, cwd=os.path.abspath(task_work_dir))
+
+            # Read the result (single number) from the script's output file
+            with open(abs_count_output_file, 'r') as f_count:
+                count_str = f_count.read().strip()
+                if not count_str: # Handle empty output from script
+                     raise ValueError("Word count script produced empty output.")
+                count = int(count_str)
+
+            print(f"  [Task Logic] run_word_count_on_list: Count for '{os.path.basename(file_path)}' is {count}")
+            counts.append(count)
+        except FileNotFoundError:
+             # This would likely be caught by the script itself now, but keep for robustness
+             print(f"  [Task Logic] run_word_count_on_list: Input split file not found '{file_path}' - Appending 0 count.")
+             counts.append(0)
+        except (subprocess.CalledProcessError, ValueError, IndexError) as e:
+            print(f"  [Task Logic] run_word_count_on_list: Error processing '{os.path.basename(file_path)}' with script: {e}. Appending 0 count.")
+            counts.append(0)
+        except Exception as e:
+             print(f"  [Task Logic] run_word_count_on_list: Unexpected error processing '{os.path.basename(file_path)}': {e}. Appending 0 count.")
+             counts.append(0)
+
+    print(f"  [Task Logic] run_word_count_on_list: Finished. Returning counts: {counts}")
+    return counts
+
+def sum_counts(counts_list):
+    """Sums a list of numbers."""
+    print(f"  [Task Logic] sum_counts: Summing list: {counts_list}")
+    total = sum(counts_list)
+    print(f"  [Task Logic] sum_counts: Total count is {total}")
+    return total
